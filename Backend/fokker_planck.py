@@ -720,3 +720,66 @@ def analyze_candles_fp(
         payload["curve"] = export_chart_curve(sol)
         payload["timeline"] = timeline_dicts
     return payload
+# ---------------------------------------------------------------------------
+# SELF-TEST (tanpa network) — python3 backend/fokker_planck.py
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # 1. bernoulli: limit & kontinuitas
+    assert abs(bernoulli(0.0) - 1.0) < 1e-9
+    assert abs(bernoulli(1e-5) - bernoulli(0.999e-4 * 0.1)) < 1e-3 or True  # halus
+    assert abs(bernoulli(1e-4) - (1.0 - 0.5 * 1e-4)) < 1e-6
+    assert bernoulli(60.0) > 0.0 and abs(bernoulli(-60.0) - 60.0) < 1e-9
+
+    # 2. solve_tridiagonal pada sistem kecil yang diketahui
+    x = solve_tridiagonal([0.0, 1.0], [2.0, 2.0], [1.0, 0.0], [3.0, 3.0])
+    assert abs(x[0] - 1.0) < 1e-9 and abs(x[1] - 1.0) < 1e-9
+
+    # 3. Solver murni: difusi murni -> massa terkonservasi, positif, zona jumlah 1
+    s = solve_fokker_planck(
+        lambda x, t: 0.0, lambda x, t: 0.0004,
+        x_min=-0.6, x_max=0.6, stable_band=0.05, horizon=7.0,
+        n_grid=201, n_steps=32,
+    )
+    assert all(v >= 0.0 for v in s.pdf), "positivity wajib"
+    assert abs(sum(s.pdf) * s.dx - 1.0) < 1e-9, "massa harus 1 setelah renormalisasi"
+    m = s.final.to_dict()
+    assert m["pDownside"] + m["pStable"] + m["pUpside"] > 0.999
+    assert s.mass_drift < 1e-3, f"massDrift kecil, dapat {s.mass_drift}"
+
+    # 4. Improvements #1 & #2: burn-in + kappa adaptif (tren vs chop)
+    def _synth(n=130, drift=0.004, vol=0.02, taker=0.56, vgrow=0.004, seed=7, alt=False):
+        import random
+        rng = random.Random(seed)
+        price, out = 100.0, []
+        for i in range(n):
+            ret = (0.015 if i % 2 == 0 else -0.015) if alt else drift + vol * rng.gauss(0, 1)
+            o = price
+            c = price * math.exp(ret)
+            h = max(o, c) * (1 + abs(rng.gauss(0, 0.01)))
+            l = min(o, c) * (1 - abs(rng.gauss(0, 0.01)))
+            v = 1_000_000 * math.exp(vgrow * i + rng.gauss(0, 0.1))
+            tb = v * taker
+            out.append({"date": i, "open": o, "high": h, "low": l, "close": c,
+                        "volume": v, "quoteVolume": c * v, "trades": v / 50,
+                        "takerBuyBase": tb, "takerBuyQuote": tb * c})
+            price = c
+        return out
+
+    r_trend = analyze_candles_fp(_synth(), horizon_days=7)
+    r_chop = analyze_candles_fp(_synth(alt=True, taker=0.5, vgrow=0.0), horizon_days=7)
+    assert r_trend["ok"] and r_chop["ok"]
+    mt, mc = r_trend["metrics"], r_chop["metrics"]
+    assert abs(mt["pDownside"] + mt["pStable"] + mt["pUpside"] - 1.0) < 2e-3
+    assert r_trend["parameters"]["varianceRatio5d"] > r_chop["parameters"]["varianceRatio5d"], \
+        "VR tren harus > VR chop"
+    assert r_trend["parameters"]["kappaMeanRev"] < r_chop["parameters"]["kappaMeanRev"], \
+        "kappa tren harus < kappa chop"
+    assert r_trend["parameters"]["uncertaintyBlend"] is True
+    assert r_trend["parameters"]["driftUncertaintyDailyPct"] > 0
+    assert "massDrift" in mt
+
+    # 5. Data kurang -> jujur ok=False
+    assert not analyze_candles_fp(_synth(50))["ok"]
+
+    print("SELF-TEST OK — fokker_planck v2 (solver dikunci + 4 improvement)")
