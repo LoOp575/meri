@@ -216,10 +216,10 @@ async def fetch_universe(
 
     rows = sample_data.seed_universe(limit)
     return {
-        "source": "seed-fallback",
+        "source": "none",
         "live": False,
-        "data": rows,
-        "universeTotal": len(rows),
+        "data": []
+        "universeTotal": 0,
         "minQuoteVolume": min_quote_volume,
         "debug": debug,
         "warning": "Live market APIs unreachable — deterministic demo data.",
@@ -273,9 +273,9 @@ async def fetch_klines(client: httpx.AsyncClient, symbol: str, limit: int = 120)
     from backend import sample_data
 
     return {
-        "source": "seed-fallback",
+        "source": "none",
         "live": False,
-        "candles": sample_data.seed_klines(symbol, limit),
+        "candles": [],
         "debug": debug,
         "warning": "Live kline APIs unreachable — deterministic demo candles.",
     }
